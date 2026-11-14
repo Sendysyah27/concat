@@ -17,7 +17,9 @@
 //! and at most [`MAX_PENDING`] of them wait at once. Only a caller that is
 //! in takes one of the [`MAX_CONNECTIONS`] seats, gets the handles a stop
 //! needs to reach it, and is subscribed to events; all three are given
-//! back the moment it hangs up, not when the server stops. An address
+//! back the moment it hangs up, not when the server stops - or when it
+//! has said nothing for [`IDLE_TIMEOUT`], which is a hang-up that never
+//! arrived. An address
 //! that keeps presenting wrong tokens waits longer each time (see
 //! [`crate::throttle`]). The accept loop backs off when accepting fails -
 //! out of file descriptors, say - instead of spinning on the error.
@@ -61,6 +63,13 @@ pub const MAX_PENDING: usize = 32;
 /// How long one write to a caller may take before the caller is taken to
 /// have stopped reading and is hung up on.
 pub const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
+/// How long an authenticated connection may say nothing before it is
+/// closed: a caller that went away without hanging up held its seat for
+/// ever, and the count on the settings page only ever grew. A call in
+/// flight is not idle - the hub answers it, and the answer is a line - so
+/// a slow call is never cut off by this, only a caller that says nothing
+/// at all.
+pub const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
 /// How many lines may wait for a caller that is not reading them before
 /// the connection is closed rather than the queue grown.
 const OUTBOX_LINES: usize = 256;
@@ -289,7 +298,9 @@ fn connection<S: Socket>(mut stream: S, door: Door, id: u64, peer: Peer, pending
     let (Ok(writer), Ok(closer)) = (stream.duplicate(), stream.duplicate()) else {
         return;
     };
-    if stream.read_timeout(None).is_err() || writer.write_timeout(Some(WRITE_TIMEOUT)).is_err() {
+    if stream.read_timeout(Some(IDLE_TIMEOUT)).is_err()
+        || writer.write_timeout(Some(WRITE_TIMEOUT)).is_err()
+    {
         return;
     }
     let Some(outbox) = Outbox::start(writer, id) else {
@@ -328,7 +339,26 @@ fn connection<S: Socket>(mut stream: S, door: Door, id: u64, peer: Peer, pending
     door.hub.subscribe(Arc::clone(&subscriber));
 
     let mut reader = BufReader::new(std::io::Cursor::new(rest).chain(stream));
-    while let Some(line) = read_line(&mut reader, MAX_LINE) {
+    loop {
+        let line = match read_line(&mut reader, MAX_LINE) {
+            Ok(Some(line)) => line,
+            Ok(None) => break,
+            Err(kind) => {
+                // A read that times out is the idle reap: a caller that
+                // went away without hanging up, whose seat the count on
+                // the settings page held for ever. Anything else is the
+                // caller going, or the socket breaking, and needs no word.
+                if matches!(
+                    kind,
+                    std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                ) {
+                    log::info!(
+                        "json-rpc: connection {id} idle for {IDLE_TIMEOUT:?}; closing it"
+                    );
+                }
+                break;
+            }
+        };
         if line.trim().is_empty() {
             continue;
         }
@@ -380,16 +410,17 @@ fn first_line<S: Socket>(stream: &mut S, deadline: Instant) -> Option<(String, V
     }
 }
 
-/// One line of at most `cap` bytes, its newline taken off. `None` at the
-/// end of the stream, on a read error, and for a line over the cap, which
-/// ends the connection: the buffer grows to the cap and no further,
-/// whatever the caller sends.
-fn read_line(reader: &mut impl BufRead, cap: usize) -> Option<String> {
+/// One line of at most `cap` bytes, its newline taken off. `Ok(None)` at
+/// the end of the stream, and for a line over the cap, which ends the
+/// connection: the buffer grows to the cap and no further, whatever the
+/// caller sends. `Err` on a read error, a timeout among them.
+fn read_line(reader: &mut impl BufRead, cap: usize) -> Result<Option<String>, std::io::ErrorKind> {
     let mut line = String::new();
     match std::io::Read::take(&mut *reader, cap as u64 + 1).read_line(&mut line) {
-        Ok(0) | Err(_) => None,
-        Ok(_) if line.len() > cap && !line.ends_with('\n') => None,
-        Ok(_) => Some(line.trim_end_matches(['\r', '\n']).to_owned()),
+        Ok(0) => Ok(None),
+        Ok(_) if line.len() > cap && !line.ends_with('\n') => Ok(None),
+        Ok(_) => Ok(Some(line.trim_end_matches(['\r', '\n']).to_owned())),
+        Err(error) => Err(error.kind()),
     }
 }
 
