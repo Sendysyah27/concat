@@ -61,3 +61,9 @@ desktop.ini
 
 # Audits are working notes for whoever runs them, not part of the source
 audit/
+
+# The release keystore and the API token must never be committed: the
+# keystore signs every release APK, and the token unlocks the phone's
+# automation server. Both live outside this tree.
+*.keystore
+.concat-api-token
