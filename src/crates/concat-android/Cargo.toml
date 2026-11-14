@@ -36,7 +36,7 @@ jni = "0.22"
 # helper.
 android-build = "0.1"
 
-# `cargo apk build -p concat-android` packages the shared object, the
+# `cargo apk2 build -p concat-android` packages the shared object, the
 # runtime libraries it links (libc++_shared, and ONNX Runtime on the
 # emulator) and the manifest below into an APK. The runtime libraries come
 # from scripts/android-libs.sh.
@@ -45,6 +45,14 @@ package = "app.concat.editor"
 apk_name = "Concat"
 build_targets = ["aarch64-linux-android"]
 runtime_libs = "../../vendor/android/jniLibs"
+# The Java the app ships: the picker bridge and the server's foreground
+# service, compiled into the main dex, so the system can start the
+# service. cargo-apk2 only; cargo-apk 0.10 has no java_sources.
+java_sources = "java"
+# The manifest below, as-is: the service, its type and its permissions
+# are not expressible in this metadata. Keep its version in step with the
+# crate's, or the package ships the old number.
+manifest_override = "AndroidManifest.xml"
 # The launcher icon, at every density Android asks for (48, 72, 96, 144,
 # 192px); rendered from assets/new_concat_logo_512_rounded_light_theme.svg.
 resources = "res"
