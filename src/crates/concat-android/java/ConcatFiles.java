@@ -206,6 +206,43 @@ public class ConcatFiles extends Fragment {
         }
     }
 
+    /**
+     * Starts the foreground service that keeps the process alive while the
+     * API server runs: a cached process is frozen by the system, and a
+     * frozen server answers nobody. Null when it started, or why it could
+     * not. From any thread; the service itself is what shows the
+     * notification, so the start is quick.
+     */
+    public static String startServerService(Activity activity) {
+        try {
+            Intent intent = new Intent(activity, ConcatServerService.class);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                activity.startForegroundService(intent);
+            } else {
+                activity.startService(intent);
+            }
+            return null;
+        } catch (RuntimeException e) {
+            Log.w(TAG, "could not start the server service", e);
+            return String.valueOf(e.getMessage());
+        }
+    }
+
+    /**
+     * Stops the server's foreground service: the process may be cached
+     * again once the server is off. Null when it stopped, or why it could
+     * not. From any thread.
+     */
+    public static String stopServerService(Activity activity) {
+        try {
+            activity.stopService(new Intent(activity, ConcatServerService.class));
+            return null;
+        } catch (RuntimeException e) {
+            Log.w(TAG, "could not stop the server service", e);
+            return String.valueOf(e.getMessage());
+        }
+    }
+
     /** Registered from Rust: the picked files' paths, or none. */
     public static native void filesPicked(String[] paths);
 
