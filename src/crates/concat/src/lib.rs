@@ -31,6 +31,8 @@ mod ui {
     slint::include_modules!();
 }
 
+/// The main thread's watchdog; see the module.
+mod anr_watchdog;
 mod batch_volume;
 mod chips;
 mod dock;
@@ -2817,8 +2819,15 @@ fn start(project: Option<std::path::PathBuf>, smoke: bool) -> Result<(), slint::
         Shell::with(|_, app| platform::apply_ui_scale(app.window()));
     });
 
+    // The main thread's watchdog: a timer that proves the loop is alive,
+    // and a thread that writes down where it was when it stops being so.
+    // See anr_watchdog. A smoke run leaves before the loop, past this
+    // point, so it never starts one.
+    let anr_timer = anr_watchdog::start();
+
     let result = app.run();
     drop(reader_sweep);
+    drop(anr_timer);
     log::info!("close: event loop exited (ok={})", result.is_ok());
     // The loop failing is the window never having run at all - on a phone
     // whose Vulkan driver wgpu will not take, it is the whole launch, and
