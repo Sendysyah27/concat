@@ -352,9 +352,7 @@ fn connection<S: Socket>(mut stream: S, door: Door, id: u64, peer: Peer, pending
                     kind,
                     std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
                 ) {
-                    log::info!(
-                        "json-rpc: connection {id} idle for {IDLE_TIMEOUT:?}; closing it"
-                    );
+                    log::info!("json-rpc: connection {id} idle for {IDLE_TIMEOUT:?}; closing it");
                 }
                 break;
             }
