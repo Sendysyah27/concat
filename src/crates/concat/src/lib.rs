@@ -33,6 +33,8 @@ mod ui {
 
 /// The main thread's watchdog; see the module.
 mod anr_watchdog;
+/// The API server's watchdog; see the module.
+mod server_watchdog;
 mod batch_volume;
 mod chips;
 mod dock;
@@ -63,6 +65,8 @@ pub use platform::{
 };
 #[cfg(target_os = "android")]
 pub use platform::{LinkOpener, install_link_opener};
+#[cfg(target_os = "android")]
+pub use platform::{ServerService, install_server_service};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub use platform::{MicrophoneAccess, install_microphone_access};
 mod panes;
