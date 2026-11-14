@@ -508,6 +508,53 @@ mod links {
     }
 }
 
+/// The foreground service that keeps the process alive while the API
+/// server runs: a cached process is frozen by the system, and a frozen
+/// server answers nobody. The window's crate asks through
+/// [`concat::platform::set_server_service`]; the Java starts and stops
+/// the service through the activity.
+#[cfg(target_os = "android")]
+mod service {
+    use jni::objects::JString;
+    use jni::{jni_sig, jni_str};
+    use slint::android::AndroidApp;
+
+    /// Hands the window's crate the way to start and stop the service.
+    pub fn install(app: &AndroidApp) {
+        let app = app.clone();
+        concat::install_server_service(Box::new(move |on| {
+            let answer = super::java::with_class(&app, |env, activity, class| {
+                let answer = if on {
+                    env.call_static_method(
+                        class,
+                        jni_str!("startServerService"),
+                        jni_sig!("(Landroid/app/Activity;)Ljava/lang/String;"),
+                        &[activity.into()],
+                    )?
+                } else {
+                    env.call_static_method(
+                        class,
+                        jni_str!("stopServerService"),
+                        jni_sig!("(Landroid/app/Activity;)Ljava/lang/String;"),
+                        &[activity.into()],
+                    )?
+                }
+                .l()?;
+                if answer.is_null() {
+                    return Ok(None);
+                }
+                let answer = env.cast_local::<JString>(answer)?;
+                Ok(Some(answer.mutf8_chars(env)?.to_string()))
+            });
+            match answer {
+                Ok(None) => Ok(()),
+                Ok(Some(why)) => Err(why),
+                Err(error) => Err(format!("could not reach the server service: {error}")),
+            }
+        }));
+    }
+}
+
 /// The screen kept on while a job runs - an export, a transcription, a
 /// download - so a phone left on the table does not time out half a
 /// minute in and stop the export with it (#695). The window's flag, which
@@ -553,6 +600,7 @@ fn android_main(app: slint::android::AndroidApp) {
     publisher::install(&app);
     microphone::install(&app);
     links::install(&app);
+    service::install(&app);
     awake::install(&app);
     if let Err(error) = concat::run() {
         log::error!("{error}");
