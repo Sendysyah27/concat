@@ -33,8 +33,6 @@ mod ui {
 
 /// The main thread's watchdog; see the module.
 mod anr_watchdog;
-/// The API server's watchdog; see the module.
-mod server_watchdog;
 mod batch_volume;
 mod chips;
 mod dock;
@@ -51,6 +49,8 @@ mod keymap;
 mod meters;
 mod motion_tiles;
 mod platform;
+/// The API server's watchdog; see the module.
+mod server_watchdog;
 /// How a phone keeps its screen on while a job runs; see
 /// `concat_host::awake`.
 #[cfg(target_os = "android")]
@@ -65,10 +65,10 @@ pub use platform::{
 };
 #[cfg(target_os = "android")]
 pub use platform::{LinkOpener, install_link_opener};
-#[cfg(target_os = "android")]
-pub use platform::{ServerService, install_server_service};
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub use platform::{MicrophoneAccess, install_microphone_access};
+#[cfg(target_os = "android")]
+pub use platform::{ServerService, install_server_service};
 mod panes;
 mod prefs;
 mod presets;
