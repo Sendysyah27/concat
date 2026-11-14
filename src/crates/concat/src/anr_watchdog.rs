@@ -46,8 +46,10 @@ struct State {
     /// the timer's tick and read by the thread.
     heartbeat_ms: AtomicU64,
     /// The loop's stack from its last tick, with when it was taken, in
-    /// milliseconds since this started.
-    last_sample: Mutex<Option<(std::backtrace::Backtrace, u64)>>,
+    /// milliseconds since this started. Behind an `Arc`: a backtrace is
+    /// not cloneable, and the thread reads the sample while the timer
+    /// keeps writing it.
+    last_sample: Mutex<Option<(Arc<std::backtrace::Backtrace>, u64)>>,
     /// The last action the loop was handed, with when, in milliseconds
     /// since this started.
     last_action: Mutex<Option<(&'static str, u64)>>,
@@ -110,7 +112,7 @@ pub fn start() -> slint::Timer {
                 .store(tick.elapsed_ms(), Ordering::Relaxed);
             let sample = std::backtrace::Backtrace::force_capture();
             if let Ok(mut slot) = tick.last_sample.lock() {
-                *slot = Some((sample, tick.elapsed_ms()));
+                *slot = Some((Arc::new(sample), tick.elapsed_ms()));
             }
         },
     );
