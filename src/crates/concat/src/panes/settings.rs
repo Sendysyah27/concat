@@ -74,6 +74,9 @@ pub enum SettingsMsg {
     ServerPortEdited(i32),
     ServerTokenEdited(String),
     ServerTokenGenerated,
+    /// The server's watchdog found it not answering and asks for a fresh
+    /// one: the server is stopped and started again on a worker.
+    ServerRestartNeeded,
     /// Make this the model the engine uses.
     ModelActivated(String),
     ModelDownload(String),
@@ -122,6 +125,24 @@ pub enum SettingsMsg {
         version: Version,
         result: Result<Installed, String>,
     },
+}
+
+/// What applying the server's preferences came to, on the worker: the
+/// server running now, or why there is none. The window installs it from
+/// the worker's completion, rather than through a message: a message is
+/// cloned, and a server is neither cloneable nor printable.
+enum ServerApplied {
+    /// The server is running.
+    Running(concat_server::Server),
+    /// The server is off, by choice.
+    Off,
+    /// The server could not start, and the switch stays on: a token too
+    /// weak to stand in front of it, which the server waits for rather
+    /// than flipping off at the first keystroke.
+    WeakToken(String),
+    /// The server could not start, and the switch was turned off with
+    /// it - a bind that failed - with the preferences saved so.
+    Failed(String),
 }
 
 /// The Version page's index in the column of pages.
@@ -246,6 +267,17 @@ pub struct SettingsPane {
     /// Why the server is not running when the switch is on: the bind that
     /// failed. Empty while it runs, or is off.
     pub server_error: String,
+    /// A server apply in flight: the stop and the start run on a worker,
+    /// and while one runs a new apply only marks
+    /// [`Self::server_apply_pending`] rather than starting a second
+    /// server on the same address.
+    server_apply: bool,
+    /// An apply was asked for while one runs: the latest preferences,
+    /// applied when the in-flight one lands.
+    server_apply_pending: bool,
+    /// The server's watchdog: probes the server and asks for a fresh one
+    /// when it stops answering. Stopped whenever the server is.
+    server_watchdog: Option<crate::server_watchdog::Watchdog>,
     /// The transcriber models, installed or not.
     pub transcribers: Vec<ModelState>,
     /// The voice models, installed or not.
@@ -421,33 +453,32 @@ impl SettingsPane {
             SettingsMsg::ServerEnabledChanged(on) => {
                 crate::anr_watchdog::note_action("ServerEnabledChanged");
                 studio.prefs.server.enabled = on;
-                studio.prefs.save(&studio.host.dirs);
                 self.apply_server(studio);
             }
             SettingsMsg::ServerHostEdited(text) => {
                 crate::anr_watchdog::note_action("ServerHostEdited");
                 let (_, port) = split_listen(&studio.prefs.server.listen);
                 studio.prefs.server.listen = join_listen(&text, port);
-                studio.prefs.save(&studio.host.dirs);
                 self.apply_server(studio);
             }
             SettingsMsg::ServerPortEdited(port) => {
                 crate::anr_watchdog::note_action("ServerPortEdited");
                 let (host, _) = split_listen(&studio.prefs.server.listen);
                 studio.prefs.server.listen = join_listen(&host, port.clamp(0, 65535) as u16);
-                studio.prefs.save(&studio.host.dirs);
                 self.apply_server(studio);
             }
             SettingsMsg::ServerTokenEdited(text) => {
                 crate::anr_watchdog::note_action("ServerTokenEdited");
                 studio.prefs.server.token = text.trim().to_owned();
-                studio.prefs.save(&studio.host.dirs);
                 self.apply_server(studio);
             }
             SettingsMsg::ServerTokenGenerated => {
                 crate::anr_watchdog::note_action("ServerTokenGenerated");
                 studio.prefs.server.token = new_token();
-                studio.prefs.save(&studio.host.dirs);
+                self.apply_server(studio);
+            }
+            SettingsMsg::ServerRestartNeeded => {
+                log::info!("server: the watchdog asked for a fresh server; restarting it");
                 self.apply_server(studio);
             }
             SettingsMsg::ModelActivated(id) => {
@@ -724,65 +755,168 @@ impl SettingsPane {
         );
     }
 
-    /// Starts or stops the API's server to match the preferences. A server
-    /// already running is stopped first, so an edited address or token
-    /// takes effect; a bind that fails turns the switch back off and says
-    /// why on the page.
+    /// Starts or stops the API's server to match the preferences, on a
+    /// worker. The stop joins the old server's listener threads, the
+    /// start waits for the API's thread to be ready, and the preferences
+    /// are written to disk: all three on the window's thread stall it
+    /// for seconds - the toggle's ANR. The window only installs what
+    /// the worker finished, and a second apply while one runs waits its
+    /// turn rather than starting a second server on the same address.
     fn apply_server(&mut self, studio: &mut Studio) {
-        // Detached: the address is free again when this returns, and a
-        // call or an export the old server was in the middle of is
-        // cancelled and finished off the event loop, not waited for on it.
-        if let Some(server) = studio.host.server.take() {
-            server.stop_detached();
+        if self.server_apply {
+            // One already runs: the latest preferences are applied when
+            // it lands, rather than a second server being started
+            // beside it.
+            self.server_apply_pending = true;
+            return;
         }
-        self.server_error.clear();
+        self.server_apply = true;
+        self.stop_server_watchdog();
+        let old = studio.host.server.take();
+        let prefs = studio.prefs.clone();
+        let dirs = studio.host.dirs.clone();
         let exporter = studio.host.exporter.clone();
         let open_projects = studio.host.open_projects.clone();
-        let dirs = studio.host.dirs.clone();
-        let prefs = &studio.prefs.server;
-        if !prefs.enabled {
-            return;
-        }
-        // A token being typed is weak until it is long enough; the switch
-        // stays on and the server waits for it, rather than the switch
-        // flipping off at the first keystroke.
-        if !prefs.token.is_empty() && concat_server::check_token(&prefs.token).is_err() {
-            self.server_error = tf("settings.tokenTooWeak", &[&concat_server::MIN_TOKEN_CHARS]);
-            return;
-        }
-        let started = prefs
-            .listen
-            .trim()
-            .parse::<std::net::SocketAddr>()
-            .map_err(|_| tf("settings.notAnAddress", &[&prefs.listen]))
-            .and_then(|address| {
-                let config = concat_server::Config {
-                    json: Some(address),
-                    token: Some(prefs.token.clone()).filter(|token| !token.is_empty()),
-                    // Where `concat --mcp`, started by an agent, finds this
-                    // server rather than opening projects behind its back.
-                    discovery: Some(concat_server::discovery::path_in(&dirs.config)),
-                    ..concat_server::Config::default()
+        spawn(
+            move || {
+                // The old server first: its listeners close and its
+                // connections hang up here, not on the window's thread.
+                if let Some(old) = old {
+                    old.stop_detached();
+                }
+                // The preferences the toggle just set, written here too.
+                prefs.save(&dirs);
+                if !prefs.server.enabled {
+                    return ServerApplied::Off;
+                }
+                // A token being typed is weak until it is long enough; the
+                // switch stays on and the server waits for it, rather than
+                // the switch flipping off at the first keystroke.
+                if !prefs.server.token.is_empty()
+                    && concat_server::check_token(&prefs.server.token).is_err()
+                {
+                    return ServerApplied::WeakToken(tf(
+                        "settings.tokenTooWeak",
+                        &[&concat_server::MIN_TOKEN_CHARS],
+                    ));
+                }
+                let started = prefs
+                    .server
+                    .listen
+                    .trim()
+                    .parse::<std::net::SocketAddr>()
+                    .map_err(|_| tf("settings.notAnAddress", &[&prefs.server.listen]))
+                    .and_then(|address| {
+                        let config = concat_server::Config {
+                            json: Some(address),
+                            token: Some(prefs.server.token.clone())
+                                .filter(|token| !token.is_empty()),
+                            // Where `concat --mcp`, started by an agent, finds this
+                            // server rather than opening projects behind its back.
+                            discovery: Some(concat_server::discovery::path_in(&dirs.config)),
+                            ..concat_server::Config::default()
+                        };
+                        // The window's export slot and its register of open
+                        // projects, so one export at a time holds across the two
+                        // and a caller never edits the project on screen.
+                        concat_server::Server::start(config, move |events| {
+                            let mut api = concat_api::Api::new(events)?;
+                            api.share_exporter(exporter);
+                            api.share_open_projects(open_projects);
+                            Ok(api)
+                        })
+                    });
+                match started {
+                    Ok(server) => ServerApplied::Running(server),
+                    Err(error) => {
+                        // A bind that failed turns the switch off, and the
+                        // preferences say so, so a launch does not try the
+                        // same address again.
+                        let mut prefs = prefs;
+                        prefs.server.enabled = false;
+                        prefs.save(&dirs);
+                        ServerApplied::Failed(error)
+                    }
+                }
+            },
+            |studio, _, _, applied| {
+                // Install what the worker finished, and learn whether
+                // another apply waits - then, with the pane's borrow
+                // ended, the notice and the next apply, which both need
+                // the whole window.
+                let (notify, pending) = {
+                    let pane = &mut studio.settings;
+                    pane.server_apply = false;
+                    match applied {
+                        ServerApplied::Running(server) => {
+                            pane.server_error.clear();
+                            let address = server.json_addr();
+                            let token = server.token().to_owned();
+                            studio.host.server = Some(server);
+                            pane.start_server_watchdog(address, token);
+                            if let Err(error) = platform::set_server_service(true) {
+                                log::warn!("server service: could not start it: {error}");
+                            }
+                            (None, pane.server_apply_pending)
+                        }
+                        ServerApplied::Off => {
+                            pane.server_error.clear();
+                            if let Err(error) = platform::set_server_service(false) {
+                                log::warn!("server service: could not stop it: {error}");
+                            }
+                            (None, pane.server_apply_pending)
+                        }
+                        ServerApplied::WeakToken(error) => {
+                            pane.server_error = error;
+                            if let Err(error) = platform::set_server_service(false) {
+                                log::warn!("server service: could not stop it: {error}");
+                            }
+                            (None, pane.server_apply_pending)
+                        }
+                        ServerApplied::Failed(error) => {
+                            // The worker already turned the switch off in
+                            // the saved preferences; the window's copy
+                            // follows.
+                            studio.prefs.server.enabled = false;
+                            pane.server_error = error.clone();
+                            if let Err(error) = platform::set_server_service(false) {
+                                log::warn!("server service: could not stop it: {error}");
+                            }
+                            (Some(error), pane.server_apply_pending)
+                        }
+                    }
                 };
-                // The window's export slot and its register of open
-                // projects, so one export at a time holds across the two
-                // and a caller never edits the project on screen.
-                concat_server::Server::start(config, move |events| {
-                    let mut api = concat_api::Api::new(events)?;
-                    api.share_exporter(exporter);
-                    api.share_open_projects(open_projects);
-                    Ok(api)
-                })
-            });
-        match started {
-            Ok(server) => studio.host.server = Some(server),
-            Err(error) => {
-                studio.prefs.server.enabled = false;
-                studio.prefs.save(&studio.host.dirs);
-                self.server_error = error.clone();
-                studio.notify(&error, true);
-            }
+                if let Some(error) = notify {
+                    studio.notify(&error, true);
+                }
+                // An apply asked for while this one ran: the latest
+                // preferences, applied now that this one has landed.
+                if pending {
+                    studio.settings.server_apply_pending = false;
+                    studio.handle(Msg::Settings(SettingsMsg::ServerRestartNeeded));
+                }
+            },
+        );
+    }
+
+    /// Stops the server's watchdog, if one runs: the server is about to
+    /// change, and a probe of the old one would ask for a restart of a
+    /// server that is already being replaced.
+    fn stop_server_watchdog(&mut self) {
+        if let Some(watchdog) = self.server_watchdog.take() {
+            watchdog.stop();
         }
+    }
+
+    /// Starts the server's watchdog for the server at `address`, with
+    /// its token: a probe every thirty seconds, and a fresh server when
+    /// it stops answering. Nothing when there is no address to probe.
+    fn start_server_watchdog(&mut self, address: Option<std::net::SocketAddr>, token: String) {
+        self.stop_server_watchdog();
+        let Some(address) = address else {
+            return;
+        };
+        self.server_watchdog = Some(crate::server_watchdog::Watchdog::start(address, token));
     }
 
     /// What the Automation page says under the switch.
