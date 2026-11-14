@@ -419,28 +419,33 @@ impl SettingsPane {
                 Self::apply_download_source(studio);
             }
             SettingsMsg::ServerEnabledChanged(on) => {
+                crate::anr_watchdog::note_action("ServerEnabledChanged");
                 studio.prefs.server.enabled = on;
                 studio.prefs.save(&studio.host.dirs);
                 self.apply_server(studio);
             }
             SettingsMsg::ServerHostEdited(text) => {
+                crate::anr_watchdog::note_action("ServerHostEdited");
                 let (_, port) = split_listen(&studio.prefs.server.listen);
                 studio.prefs.server.listen = join_listen(&text, port);
                 studio.prefs.save(&studio.host.dirs);
                 self.apply_server(studio);
             }
             SettingsMsg::ServerPortEdited(port) => {
+                crate::anr_watchdog::note_action("ServerPortEdited");
                 let (host, _) = split_listen(&studio.prefs.server.listen);
                 studio.prefs.server.listen = join_listen(&host, port.clamp(0, 65535) as u16);
                 studio.prefs.save(&studio.host.dirs);
                 self.apply_server(studio);
             }
             SettingsMsg::ServerTokenEdited(text) => {
+                crate::anr_watchdog::note_action("ServerTokenEdited");
                 studio.prefs.server.token = text.trim().to_owned();
                 studio.prefs.save(&studio.host.dirs);
                 self.apply_server(studio);
             }
             SettingsMsg::ServerTokenGenerated => {
+                crate::anr_watchdog::note_action("ServerTokenGenerated");
                 studio.prefs.server.token = new_token();
                 studio.prefs.save(&studio.host.dirs);
                 self.apply_server(studio);
