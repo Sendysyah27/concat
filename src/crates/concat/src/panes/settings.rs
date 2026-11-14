@@ -132,8 +132,9 @@ pub enum SettingsMsg {
 /// the worker's completion, rather than through a message: a message is
 /// cloned, and a server is neither cloneable nor printable.
 enum ServerApplied {
-    /// The server is running.
-    Running(concat_server::Server),
+    /// The server is running, boxed so the enum stays small
+    /// (clippy::large_enum_variant: the server is 272 bytes).
+    Running(Box<concat_server::Server>),
     /// The server is off, by choice.
     Off,
     /// The server could not start, and the switch stays on: a token too
@@ -827,7 +828,7 @@ impl SettingsPane {
                         })
                     });
                 match started {
-                    Ok(server) => ServerApplied::Running(server),
+                    Ok(server) => ServerApplied::Running(Box::new(server)),
                     Err(error) => {
                         // A bind that failed turns the switch off, and the
                         // preferences say so, so a launch does not try the
@@ -852,7 +853,7 @@ impl SettingsPane {
                             pane.server_error.clear();
                             let address = server.json_addr();
                             let token = server.token().to_owned();
-                            studio.host.server = Some(server);
+                            studio.host.server = Some(*server);
                             pane.start_server_watchdog(address, token);
                             if let Err(error) = platform::set_server_service(true) {
                                 log::warn!("server service: could not start it: {error}");
