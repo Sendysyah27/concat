@@ -9,6 +9,11 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=java/ConcatFiles.java");
+    // The server's foreground service: javac finds it beside
+    // ConcatFiles.java, in the same package, and the in-memory dex
+    // carries it too - unused there, the system starts the service from
+    // the main dex - but a change to it must rebuild this dex as well.
+    println!("cargo:rerun-if-changed=java/ConcatServerService.java");
     let target = std::env::var("TARGET").unwrap_or_default();
     if !target.contains("android") {
         return;
