@@ -912,6 +912,41 @@ pub fn install_link_opener(opener: LinkOpener) {
     let _ = LINK_OPENER.set(opener);
 }
 
+/// Starts or stops the foreground service that keeps the process alive
+/// while the API server runs: on a phone, a process the system has
+/// cached is frozen, and a frozen server answers nobody - not even its
+/// own auth. Installed by the phone's own crate; see
+/// [`install_server_service`].
+#[cfg(target_os = "android")]
+pub type ServerService = Box<dyn Fn(bool) -> Result<(), String> + Send + Sync>;
+
+#[cfg(target_os = "android")]
+static SERVER_SERVICE: std::sync::OnceLock<ServerService> = std::sync::OnceLock::new();
+
+/// Installs how a phone starts and stops the server's foreground
+/// service. Once; a second call is ignored.
+#[cfg(target_os = "android")]
+pub fn install_server_service(service: ServerService) {
+    let _ = SERVER_SERVICE.set(service);
+}
+
+/// Starts the server's foreground service when `on`, stops it when off.
+/// A desktop has no service to start, and nothing is done there.
+pub fn set_server_service(on: bool) -> Result<(), String> {
+    #[cfg(target_os = "android")]
+    {
+        match SERVER_SERVICE.get() {
+            Some(set) => set(on),
+            None => Err("this device has no server service to start".to_owned()),
+        }
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = on;
+        Ok(())
+    }
+}
+
 /// Opens a web address in the system's browser: the launch screen's
 /// guides, the repository, the release notes. A desktop hands it to the
 /// platform's opener; Android to an ACTION_VIEW intent through the
