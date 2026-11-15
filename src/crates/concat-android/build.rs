@@ -30,6 +30,7 @@ fn main() {
     let android_jar = android_build::android_jar(None).expect("no Android platform found");
     let compiled = android_build::JavaBuild::new()
         .file("java/ConcatFiles.java")
+        .file("java/ConcatServerService.java")
         .class_path(&android_jar)
         .classes_out_dir(&classes)
         .java_source_version(8)
