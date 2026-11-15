@@ -79,7 +79,9 @@ icon = "@mipmap/ic_launcher"
 # the end of the process, so each of these closed the app mid-edit: dark
 # mode switching on (at sunset, too), split screen, a larger font or
 # display size, a new language, a keyboard plugged in.
-[package.metadata.android.application.activity]
+# cargo-apk2 reads the activities as a list (ndk-build2: activities is
+# a Vec), so one activity is one entry of the array, not a single table.
+[[package.metadata.android.application.activity]]
 config_changes = "orientation|keyboardHidden|keyboard|navigation|screenSize|smallestScreenSize|screenLayout|uiMode|density|fontScale|fontWeightAdjustment|locale|layoutDirection"
 launch_mode = "singleTop"
 # Upright only. The phone shell is drawn for a screen held upright - the
